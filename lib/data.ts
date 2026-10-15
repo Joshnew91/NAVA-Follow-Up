@@ -13,6 +13,9 @@ export type FamilyRow = {
   paused_reason: string | null
   is_sample: boolean
   updated_at: string
+  created_at: string
+  created_by: string | null
+  authorization_signed_on: string | null
 }
 
 export type ConsentRow = {
@@ -41,11 +44,22 @@ export type ScheduledRow = {
   body: string
   scheduled_for: string
   status: ScheduledStatus
-  requires_approval: boolean
   blocked_reason: string | null
-  approved_at: string | null
+  sent_at: string | null
+  attempts: number
+  last_error: string | null
+  edited_at: string | null
   families: { contact_name: string; status: FamilyStatus } | null
   message_templates: { title: string; position: number } | null
+  delivery_status?: string | null
+}
+
+export type AlertRow = {
+  id: string
+  family_id: string | null
+  kind: string
+  message: string
+  created_at: string
 }
 
 export type TemplateRow = {
@@ -59,7 +73,7 @@ export type TemplateRow = {
 }
 
 const FAMILY_COLUMNS =
-  'id, contact_name, relationship, deceased_name, phone_e164, service_date, status, paused_reason, is_sample, updated_at'
+  'id, contact_name, relationship, deceased_name, phone_e164, service_date, status, paused_reason, is_sample, updated_at, created_at, created_by, authorization_signed_on'
 
 async function count(table: string, homeId: string, apply?: (q: any) => any) {
   const supabase = await createClient()
@@ -71,12 +85,20 @@ async function count(table: string, homeId: string, apply?: (q: any) => any) {
 
 export async function getOverview(homeId: string) {
   const supabase = await createClient()
-  const [active, paused, optedOut, needsApproval, upcoming, replies] = await Promise.all([
+  const weekAhead = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+  const [active, paused, optedOut, nextWeek, failed, alerts, replies] = await Promise.all([
     count('families', homeId, (q) => q.eq('status', 'active')),
     count('families', homeId, (q) => q.eq('status', 'paused')),
     count('families', homeId, (q) => q.eq('status', 'opted_out')),
-    count('scheduled_messages', homeId, (q) => q.eq('status', 'pending_approval')),
-    count('scheduled_messages', homeId, (q) => q.eq('status', 'approved')),
+    count('scheduled_messages', homeId, (q) => q.eq('status', 'scheduled').lte('scheduled_for', weekAhead)),
+    count('scheduled_messages', homeId, (q) => q.eq('status', 'failed')),
+    supabase
+      .from('system_alerts')
+      .select('id, family_id, kind, message, created_at')
+      .eq('funeral_home_id', homeId)
+      .is('resolved_at', null)
+      .order('created_at', { ascending: false })
+      .limit(5),
     supabase
       .from('messages')
       .select('id, family_id, body, is_opt_out, created_at, families(contact_name)')
@@ -89,8 +111,9 @@ export async function getOverview(homeId: string) {
     active,
     paused,
     optedOut,
-    needsApproval,
-    upcoming,
+    nextWeek,
+    failed,
+    alerts: (alerts.data ?? []) as AlertRow[],
     recentReplies: (replies.data ?? []) as unknown as (Pick<MessageRow, 'id' | 'family_id' | 'body' | 'is_opt_out' | 'created_at'> & {
       families: { contact_name: string } | null
     })[],
@@ -99,19 +122,22 @@ export async function getOverview(homeId: string) {
 
 export async function getFamilies(homeId: string) {
   const supabase = await createClient()
-  const [families, consents, scheduled] = await Promise.all([
-    supabase.from('families').select(FAMILY_COLUMNS).eq('funeral_home_id', homeId).order('updated_at', { ascending: false }),
+  const [families, consents, scheduled, members] = await Promise.all([
+    supabase.from('families').select(FAMILY_COLUMNS).eq('funeral_home_id', homeId).order('created_at', { ascending: false }),
     supabase
       .from('sms_consents')
       .select('family_id, consent_given, method, consent_language, evidence_note, source, recorded_at')
       .eq('funeral_home_id', homeId)
       .order('recorded_at', { ascending: false }),
-    supabase
-      .from('scheduled_messages')
-      .select('family_id, status')
-      .eq('funeral_home_id', homeId)
-      .in('status', ['pending_approval', 'approved', 'blocked', 'draft']),
+    supabase.from('scheduled_messages').select('family_id, status').eq('funeral_home_id', homeId).eq('status', 'scheduled'),
+    supabase.from('memberships').select('user_id').eq('funeral_home_id', homeId),
   ])
+
+  const memberIds = (members.data ?? []).map((m) => m.user_id as string)
+  const { data: profiles } = memberIds.length
+    ? await supabase.from('profiles').select('id, full_name, email').in('id', memberIds)
+    : { data: [] }
+  const nameById = new Map((profiles ?? []).map((p) => [p.id as string, (p.full_name || p.email) as string]))
 
   const latestConsent = new Map<string, ConsentRow>()
   for (const row of (consents.data ?? []) as ConsentRow[]) {
@@ -124,6 +150,7 @@ export async function getFamilies(homeId: string) {
     ...family,
     consent: latestConsent.get(family.id) ?? null,
     openScheduled: openCounts.get(family.id) ?? 0,
+    enrolledBy: family.created_by ? (nameById.get(family.created_by) ?? 'Former team member') : null,
   }))
 }
 
@@ -168,23 +195,35 @@ export async function getInbox(homeId: string, selectedId?: string) {
 export async function getSchedule(homeId: string) {
   const supabase = await createClient()
   const columns =
-    'id, family_id, body, scheduled_for, status, requires_approval, blocked_reason, approved_at, families(contact_name, status), message_templates(title, position)'
+    'id, family_id, body, scheduled_for, status, blocked_reason, sent_at, attempts, last_error, edited_at, families(contact_name, status), message_templates(title, position)'
   const [open, closed] = await Promise.all([
     supabase
       .from('scheduled_messages')
       .select(columns)
       .eq('funeral_home_id', homeId)
-      .in('status', ['pending_approval', 'approved', 'blocked', 'draft'])
+      .in('status', ['scheduled', 'failed', 'skipped'])
       .order('scheduled_for'),
     supabase
       .from('scheduled_messages')
       .select(columns)
       .eq('funeral_home_id', homeId)
-      .in('status', ['sent', 'cancelled'])
+      .in('status', ['sent', 'cancelled', 'opted_out'])
       .order('updated_at', { ascending: false })
-      .limit(15),
+      .limit(20),
   ])
-  return { open: (open.data ?? []) as unknown as ScheduledRow[], closed: (closed.data ?? []) as unknown as ScheduledRow[] }
+
+  const closedRows = (closed.data ?? []) as unknown as ScheduledRow[]
+  const sentIds = closedRows.filter((r) => r.status === 'sent').map((r) => r.id)
+  if (sentIds.length) {
+    const { data: deliveries } = await supabase
+      .from('messages')
+      .select('scheduled_message_id, delivery_status')
+      .eq('funeral_home_id', homeId)
+      .in('scheduled_message_id', sentIds)
+    const byId = new Map((deliveries ?? []).map((d) => [d.scheduled_message_id as string, d.delivery_status as string]))
+    for (const row of closedRows) row.delivery_status = byId.get(row.id) ?? null
+  }
+  return { open: (open.data ?? []) as unknown as ScheduledRow[], closed: closedRows }
 }
 
 export async function getTemplates(homeId: string) {

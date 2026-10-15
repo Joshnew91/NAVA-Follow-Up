@@ -8,7 +8,17 @@ export function parseSection(value: string | string[] | undefined): Section {
 
 export type Role = 'admin' | 'staff'
 export type FamilyStatus = 'active' | 'paused' | 'opted_out' | 'completed'
-export type ScheduledStatus = 'draft' | 'pending_approval' | 'approved' | 'sent' | 'cancelled' | 'blocked'
+export type ScheduledStatus =
+  | 'scheduled'
+  | 'sent'
+  | 'skipped'
+  | 'failed'
+  | 'cancelled'
+  | 'opted_out'
+  | 'draft'
+  | 'pending_approval'
+  | 'approved'
+  | 'blocked'
 export type ConsentMethod = 'written_form' | 'verbal_in_person' | 'verbal_phone' | 'web_form' | 'keyword_reply'
 
 export type FuneralHome = {
@@ -16,8 +26,11 @@ export type FuneralHome = {
   name: string
   notification_email: string | null
   timezone: string
-  require_approval: boolean
   texting_enabled: boolean
+  messaging_paused: boolean
+  messaging_paused_at: string | null
+  pause_on_reply: boolean
+  skip_holidays: boolean
 }
 
 export type HomeContext = {

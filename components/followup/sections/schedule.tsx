@@ -1,15 +1,24 @@
-import { approveScheduled, cancelScheduled, sendScheduledNow, updateScheduled } from '@/app/actions'
+import { cancelScheduled, restoreScheduled, skipScheduled, updateScheduled } from '@/app/actions'
 import { getSchedule, type ScheduledRow } from '@/lib/data'
-import { formatDateTime, SCHEDULED_STATUS_LABELS, toZonedInputs } from '@/lib/format'
+import { displayStatus, formatDateTime, toZonedInputs } from '@/lib/format'
 import type { HomeContext } from '@/lib/types'
 import { ActionForm } from '../action-form'
 import { Field, inputClass } from '../field'
 
+function holdReason(item: ScheduledRow, homePaused: boolean) {
+  if (homePaused) return 'All messages are paused for your funeral home. Resume in Settings.'
+  if (item.families?.status === 'paused') return 'On hold while this family is paused.'
+  if (item.families?.status === 'completed') return 'Follow-ups were stopped for this family.'
+  if (item.status === 'failed') return item.last_error ?? 'Delivery failed after several attempts.'
+  return item.blocked_reason
+}
+
 function ScheduledCard({ item, ctx }: { item: ScheduledRow; ctx: HomeContext }) {
   const tz = ctx.home.timezone
   const { date, time } = toZonedInputs(item.scheduled_for, tz)
-  const isAdmin = ctx.role === 'admin'
-  const familyHeld = item.families?.status !== 'active'
+  const status = displayStatus(item.status, { familyStatus: item.families?.status, homePaused: ctx.home.messaging_paused })
+  const reason = holdReason(item, ctx.home.messaging_paused)
+  const editable = item.status === 'scheduled' || item.status === 'failed'
 
   return (
     <li className="rounded-xl bg-card p-5">
@@ -21,50 +30,52 @@ function ScheduledCard({ item, ctx }: { item: ScheduledRow; ctx: HomeContext }) 
           ) : null}
         </p>
         <p className="text-xs text-muted-foreground">
-          {SCHEDULED_STATUS_LABELS[item.status]} · {formatDateTime(item.scheduled_for, tz)}
+          {status} · {formatDateTime(item.scheduled_for, tz)}
         </p>
       </div>
-      {(item.blocked_reason || familyHeld) && (
-        <p className="mt-2 rounded-lg bg-notice p-3 text-sm leading-relaxed text-notice-foreground">
-          {item.blocked_reason ?? 'On hold while this conversation is paused.'}
-        </p>
+      {reason && (
+        <p className="mt-2 rounded-lg bg-notice p-3 text-sm leading-relaxed text-notice-foreground">{reason}</p>
       )}
 
-      <ActionForm action={updateScheduled} submitLabel="Save changes" variant="outline" className="mt-3">
-        <input type="hidden" name="id" value={item.id} />
-        <Field label="Message" htmlFor={`body-${item.id}`} hint="Editing an approved message sends it back for approval.">
-          <textarea id={`body-${item.id}`} name="body" rows={4} maxLength={640} defaultValue={item.body} className={inputClass} />
-        </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Date" htmlFor={`date-${item.id}`}>
-            <input id={`date-${item.id}`} name="date" type="date" defaultValue={date} className={inputClass} />
-          </Field>
-          <Field label="Time" htmlFor={`time-${item.id}`}>
-            <input id={`time-${item.id}`} name="time" type="time" defaultValue={time} className={inputClass} />
-          </Field>
-        </div>
-      </ActionForm>
+      {editable ? (
+        <details className="mt-3">
+          <summary className="min-h-11 cursor-pointer content-center text-sm font-medium">Edit or reschedule</summary>
+          <ActionForm action={updateScheduled} submitLabel="Save changes" variant="outline" className="mt-3">
+            <input type="hidden" name="id" value={item.id} />
+            <Field label="Message" htmlFor={`body-${item.id}`}>
+              <textarea id={`body-${item.id}`} name="body" rows={5} maxLength={640} defaultValue={item.body} className={inputClass} />
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Date" htmlFor={`date-${item.id}`}>
+                <input id={`date-${item.id}`} name="date" type="date" defaultValue={date} className={inputClass} />
+              </Field>
+              <Field label="Time" htmlFor={`time-${item.id}`}>
+                <input id={`time-${item.id}`} name="time" type="time" defaultValue={time} className={inputClass} />
+              </Field>
+            </div>
+          </ActionForm>
+        </details>
+      ) : (
+        <p className="mt-3 text-sm leading-relaxed text-muted-foreground line-clamp-3">{item.body}</p>
+      )}
 
       <div className="mt-3 flex flex-wrap gap-3 border-t pt-3">
-        {item.status === 'pending_approval' && isAdmin && (
-          <ActionForm action={approveScheduled} submitLabel="Approve" pendingLabel="Approving...">
+        {item.status === 'scheduled' && (
+          <ActionForm action={skipScheduled} submitLabel="Skip" pendingLabel="Skipping..." variant="outline">
             <input type="hidden" name="id" value={item.id} />
           </ActionForm>
         )}
-        {item.status === 'pending_approval' && !isAdmin && (
-          <p className="text-sm text-muted-foreground">Waiting for an administrator to approve.</p>
-        )}
-        {item.status === 'approved' && (
-          <ActionForm action={sendScheduledNow} submitLabel="Simulate send now" pendingLabel="Recording..." variant="secondary">
+        {(item.status === 'skipped' || item.status === 'failed') && (
+          <ActionForm action={restoreScheduled} submitLabel={item.status === 'failed' ? 'Retry' : 'Restore'} pendingLabel="Saving...">
             <input type="hidden" name="id" value={item.id} />
           </ActionForm>
         )}
         <ActionForm
           action={cancelScheduled}
           submitLabel="Cancel message"
-          pendingLabel="Cancelling..."
+          pendingLabel="Canceling..."
           variant="ghost"
-          confirmMessage="Cancel this scheduled message?"
+          confirmMessage="Cancel this message? It will not be sent."
         >
           <input type="hidden" name="id" value={item.id} />
         </ActionForm>
@@ -79,15 +90,15 @@ export async function ScheduleSection({ ctx }: { ctx: HomeContext }) {
   return (
     <div className="flex flex-col gap-5">
       <p className="rounded-lg bg-notice p-4 text-sm leading-relaxed text-notice-foreground">
-        {ctx.home.require_approval
-          ? 'An administrator must approve each message before it can go out.'
-          : 'Approval is turned off in Settings. Messages still never send while texting is disabled.'}{' '}
-        Each family gets each template at most once.
+        {ctx.home.messaging_paused
+          ? 'All automated messages are paused. Nothing will send until an administrator resumes them in Settings.'
+          : 'Messages send automatically on their scheduled dates between 9am and 8pm, at most one per family per day.'}{' '}
+        {ctx.home.texting_enabled ? '' : 'Texting is not connected yet, so sends are simulated.'}
       </p>
 
       {open.length === 0 ? (
         <p className="rounded-xl bg-card p-6 text-sm text-muted-foreground">
-          Nothing scheduled. Schedule follow-ups from the Families page.
+          Nothing upcoming. Messages are scheduled automatically when you add a family.
         </p>
       ) : (
         <ul className="flex flex-col gap-3">
@@ -109,7 +120,10 @@ export async function ScheduleSection({ ctx }: { ctx: HomeContext }) {
                   {item.families?.contact_name ?? 'Family'}
                   {item.message_templates ? ` · ${item.message_templates.title}` : ''}
                 </span>
-                <span className="text-muted-foreground">{SCHEDULED_STATUS_LABELS[item.status]}</span>
+                <span className="text-muted-foreground">
+                  {displayStatus(item.status, { deliveryStatus: item.delivery_status })}
+                  {item.sent_at ? ` · ${formatDateTime(item.sent_at, ctx.home.timezone)}` : ''}
+                </span>
               </li>
             ))}
           </ul>

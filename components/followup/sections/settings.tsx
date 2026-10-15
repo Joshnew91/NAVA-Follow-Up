@@ -3,6 +3,7 @@ import {
   inviteMember,
   loadSampleData,
   removeMember,
+  setHomePaused,
   updateMemberRole,
   updateSettings,
 } from '@/app/actions'
@@ -41,18 +42,53 @@ export async function SettingsSection({ ctx }: { ctx: HomeContext }) {
               />
             </Field>
             <label className="flex min-h-11 items-center gap-3 text-sm">
-              <input type="checkbox" name="requireApproval" defaultChecked={ctx.home.require_approval} className="size-5 accent-brand" />
-              Require administrator approval before messages go out
+              <input type="checkbox" name="pauseOnReply" defaultChecked={ctx.home.pause_on_reply} className="size-5 shrink-0 accent-brand" />
+              Pause a family&apos;s follow-ups when they reply, until staff responds
+            </label>
+            <label className="flex min-h-11 items-center gap-3 text-sm">
+              <input type="checkbox" name="skipHolidays" defaultChecked={ctx.home.skip_holidays} className="size-5 shrink-0 accent-brand" />
+              Don&apos;t send on major holidays (moves to the next day)
             </label>
           </ActionForm>
         ) : (
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-            {ctx.home.name} · Approval {ctx.home.require_approval ? 'required' : 'not required'}. Only administrators can change settings.
+            {ctx.home.name}. Only administrators can change settings.
           </p>
         )}
         <p className="mt-4 rounded-lg bg-notice p-3 text-sm leading-relaxed text-notice-foreground">
-          Texting is disabled for every funeral home and is locked off in the database until launch.
+          Texting is not connected yet. Messages run on schedule but each send is simulated and no real texts go out.
         </p>
+      </section>
+
+      <section aria-labelledby="master-pause" className="rounded-xl bg-card p-5">
+        <h2 id="master-pause" className="font-semibold">
+          Automated messages
+        </h2>
+        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+          {ctx.home.messaging_paused
+            ? `Paused${ctx.home.messaging_paused_at ? ` since ${formatDateTime(ctx.home.messaging_paused_at, ctx.home.timezone)}` : ''}. Nothing sends to any family until resumed.`
+            : 'Running. Pausing stops every family’s messages immediately.'}
+        </p>
+        {ctx.home.messaging_paused ? (
+          isAdmin ? (
+            <ActionForm action={setHomePaused} submitLabel="Resume all messages" pendingLabel="Resuming..." className="mt-3">
+              <input type="hidden" name="pause" value="false" />
+            </ActionForm>
+          ) : (
+            <p className="mt-3 text-sm text-muted-foreground">Ask an administrator to resume.</p>
+          )
+        ) : (
+          <ActionForm
+            action={setHomePaused}
+            submitLabel="Pause all messages"
+            pendingLabel="Pausing..."
+            variant="destructive"
+            confirmMessage="Pause every automated message for this funeral home?"
+            className="mt-3"
+          >
+            <input type="hidden" name="pause" value="true" />
+          </ActionForm>
+        )}
       </section>
 
       <section aria-labelledby="team" className="rounded-xl bg-card">

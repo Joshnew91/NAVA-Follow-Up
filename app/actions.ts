@@ -6,7 +6,7 @@ import { redirect } from 'next/navigation'
 import { normalizePhone, zonedInputsToIso } from '@/lib/format'
 import { getHomeContext, getMemberships, getUser, HOME_COOKIE } from '@/lib/session'
 import { createClient } from '@/lib/supabase/server'
-import { STAFF_CONSENT_METHODS, type ActionResult, type ConsentMethod } from '@/lib/types'
+import type { ActionResult } from '@/lib/types'
 
 type DbError = { code?: string; message?: string } | null
 
@@ -80,7 +80,7 @@ export async function sendReply(formData: FormData): Promise<ActionResult> {
   if (error) return fail(error)
   return done(
     data === 'pending_approval'
-      ? 'Sent to an administrator for approval.'
+      ? 'Saved.'
       : 'Saved as a simulated message. Texting is off, so nothing was sent.',
   )
 }
@@ -116,87 +116,115 @@ export async function setFamilyPaused(formData: FormData): Promise<ActionResult>
     .eq('id', familyId)
     .eq('funeral_home_id', ctx.home.id)
   if (error) return fail(error)
-  return done(pause ? 'Conversation paused. No messages will go out.' : 'Conversation resumed.')
+  return done(pause ? 'Paused. No messages will go out to this family until resumed.' : 'Resumed. Follow-ups continue on schedule.')
 }
 
-function parseConsent(formData: FormData) {
-  const method = str(formData, 'consentMethod') as ConsentMethod
-  const language = str(formData, 'consentLanguage', 1000)
-  const evidence = str(formData, 'evidenceNote', 1000)
-  if (!STAFF_CONSENT_METHODS.includes(method)) return { error: 'Choose how consent was collected.' } as const
-  if (!language) return { error: 'Record the consent wording the family agreed to.' } as const
-  return { method, language, evidence: evidence || null } as const
+export async function stopFamily(formData: FormData): Promise<ActionResult> {
+  const familyId = id(formData, 'familyId')
+  if (!familyId) return fail(null)
+  const ctx = await getHomeContext()
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from('families')
+    .update({ status: 'completed' })
+    .eq('id', familyId)
+    .eq('funeral_home_id', ctx.home.id)
+  if (error) return fail(error)
+  return done('Follow-ups stopped for this family. Remaining messages will not send.')
+}
+
+const DATE = /^\d{4}-\d{2}-\d{2}$/
+
+function sameName(a: string | null, b: string) {
+  return (a ?? '').trim().toLowerCase().replace(/\s+/g, ' ') === b.trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
 export async function addFamily(formData: FormData): Promise<ActionResult> {
   const ctx = await getHomeContext()
+  const deceasedName = str(formData, 'deceasedName', 120)
   const contactName = str(formData, 'contactName', 120)
   const phone = normalizePhone(str(formData, 'phone', 30))
   const serviceDate = str(formData, 'serviceDate', 10)
-  const hasConsent = formData.get('consentGiven') === 'on'
+  const signedOn = str(formData, 'authorizationSignedOn', 10)
+  const allowDuplicate = formData.get('allowDuplicate') === 'on'
 
+  if (!deceasedName) return { ok: false, message: 'Enter the name of the deceased.' }
   if (!contactName) return { ok: false, message: 'Enter the family contact name.' }
   if (!phone) return { ok: false, message: 'Enter a valid mobile number, such as (512) 555-0123.' }
-  if (serviceDate && !/^\d{4}-\d{2}-\d{2}$/.test(serviceDate)) return { ok: false, message: 'Check the service date.' }
+  if (!DATE.test(serviceDate)) return { ok: false, message: 'Enter the service date.' }
+  if (signedOn && !DATE.test(signedOn)) return { ok: false, message: 'Check the authorization signed date.' }
 
-  const consent = hasConsent ? parseConsent(formData) : null
-  if (consent && 'error' in consent) return { ok: false, message: consent.error! }
 
   const supabase = await createClient()
+  const { data: existing } = await supabase
+    .from('families')
+    .select('contact_name, deceased_name, phone_e164')
+    .eq('funeral_home_id', ctx.home.id)
+    .or(`phone_e164.eq.${phone},deceased_name.ilike.${deceasedName.replace(/[%,()*]/g, '')}`)
+    .limit(10)
+
+  const samePhone = existing?.find((f) => f.phone_e164 === phone)
+  if (samePhone) {
+    return {
+      ok: false,
+      message: `This number is already enrolled for ${samePhone.contact_name}${samePhone.deceased_name ? ` (in memory of ${samePhone.deceased_name})` : ''}.`,
+    }
+  }
+  const likely = existing?.find((f) => sameName(f.deceased_name, deceasedName) && sameName(f.contact_name, contactName))
+  if (likely && !allowDuplicate) {
+    return {
+      ok: false,
+      message: `${contactName} is already enrolled in memory of ${deceasedName} with a different number. Check "This is a different family" to add anyway.`,
+    }
+  }
+
   const { data: family, error } = await supabase
     .from('families')
     .insert({
       funeral_home_id: ctx.home.id,
       contact_name: contactName,
       relationship: str(formData, 'relationship', 60) || null,
-      deceased_name: str(formData, 'deceasedName', 120) || null,
+      deceased_name: deceasedName,
       phone_e164: phone,
-      service_date: serviceDate || null,
-      created_by: ctx.userId,
+      service_date: serviceDate,
+      authorization_signed_on: signedOn || null,
     })
-    .select('id')
+    .select('id, status')
     .single()
   if (error) {
     if (error.code === '23505') return { ok: false, message: 'A family with this phone number already exists.' }
     return fail(error)
   }
 
-  if (consent && !('error' in consent)) {
-    const { error: consentError } = await supabase.from('sms_consents').insert({
-      funeral_home_id: ctx.home.id,
-      family_id: family.id,
-      consent_given: true,
-      method: consent.method,
-      consent_language: consent.language,
-      evidence_note: consent.evidence,
-      recorded_by: ctx.userId,
-    })
-    if (consentError) return fail(consentError)
+  if (family.status === 'opted_out') {
+    return done('Family added, but this number previously replied STOP. No messages will be sent unless the family texts START.')
   }
-
-  return done(hasConsent ? 'Family added with documented consent.' : 'Family added. Record consent before scheduling.')
+  const { count } = await supabase
+    .from('scheduled_messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('family_id', family.id)
+    .eq('status', 'scheduled')
+  return done(`Family added. ${count ?? 0} follow-up message${count === 1 ? '' : 's'} scheduled automatically.`)
 }
 
-export async function recordConsent(formData: FormData): Promise<ActionResult> {
+export async function withdrawAuthorization(formData: FormData): Promise<ActionResult> {
   const ctx = await getHomeContext()
   const familyId = id(formData, 'familyId')
-  const given = str(formData, 'consentGiven') === 'true'
-  const consent = parseConsent(formData)
+  const note = str(formData, 'note', 1000)
   if (!familyId) return fail(null)
-  if ('error' in consent) return { ok: false, message: consent.error! }
 
   const supabase = await createClient()
   const { error } = await supabase.from('sms_consents').insert({
     funeral_home_id: ctx.home.id,
     family_id: familyId,
-    consent_given: given,
-    method: consent.method,
-    consent_language: consent.language,
-    evidence_note: consent.evidence,
+    consent_given: false,
+    method: 'written_form',
+    consent_language: 'Family withdrew SMS authorization.',
+    evidence_note: note || null,
     recorded_by: ctx.userId,
   })
   if (error) return fail(error)
-  return done(given ? 'Consent recorded.' : 'Consent withdrawn. Pending messages were cancelled.')
+  return done('Authorization withdrawn. The number is opted out and remaining messages were canceled.')
 }
 
 export async function scheduleFollowups(formData: FormData): Promise<ActionResult> {
@@ -228,7 +256,7 @@ export async function updateScheduled(formData: FormData): Promise<ActionResult>
   return done('Changes saved.')
 }
 
-async function setScheduledStatus(formData: FormData, status: 'approved' | 'cancelled', message: string) {
+async function setScheduledStatus(formData: FormData, status: 'scheduled' | 'skipped' | 'cancelled', message: string) {
   const ctx = await getHomeContext()
   const messageId = id(formData)
   if (!messageId) return fail(null)
@@ -242,12 +270,25 @@ async function setScheduledStatus(formData: FormData, status: 'approved' | 'canc
   return done(message)
 }
 
-export async function approveScheduled(formData: FormData): Promise<ActionResult> {
-  return setScheduledStatus(formData, 'approved', 'Approved.')
+export async function skipScheduled(formData: FormData): Promise<ActionResult> {
+  return setScheduledStatus(formData, 'skipped', 'Skipped. The rest of the follow-ups continue as planned.')
+}
+
+export async function restoreScheduled(formData: FormData): Promise<ActionResult> {
+  return setScheduledStatus(formData, 'scheduled', 'Back on the schedule.')
 }
 
 export async function cancelScheduled(formData: FormData): Promise<ActionResult> {
-  return setScheduledStatus(formData, 'cancelled', 'Cancelled.')
+  return setScheduledStatus(formData, 'cancelled', 'Canceled.')
+}
+
+export async function setHomePaused(formData: FormData): Promise<ActionResult> {
+  const ctx = await getHomeContext()
+  const pause = str(formData, 'pause') === 'true'
+  const supabase = await createClient()
+  const { error } = await supabase.rpc('set_home_messaging_paused', { p_home: ctx.home.id, p_paused: pause })
+  if (error) return fail(error)
+  return done(pause ? 'All automated messages are paused.' : 'Automated messages resumed. Anything overdue goes out at the next allowed time.')
 }
 
 export async function sendScheduledNow(formData: FormData): Promise<ActionResult> {
@@ -289,7 +330,12 @@ export async function updateSettings(formData: FormData): Promise<ActionResult> 
   const supabase = await createClient()
   const { error } = await supabase
     .from('funeral_homes')
-    .update({ name, notification_email: email || null, require_approval: formData.get('requireApproval') === 'on' })
+    .update({
+      name,
+      notification_email: email || null,
+      pause_on_reply: formData.get('pauseOnReply') === 'on',
+      skip_holidays: formData.get('skipHolidays') === 'on',
+    })
     .eq('id', ctx.home.id)
   if (error) return fail(error)
   return done('Settings saved.')

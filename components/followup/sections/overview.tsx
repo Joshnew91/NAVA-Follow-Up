@@ -6,15 +6,40 @@ import type { HomeContext } from '@/lib/types'
 export async function OverviewSection({ ctx }: { ctx: HomeContext }) {
   const data = await getOverview(ctx.home.id)
   const tiles = [
-    { label: 'Needs approval', value: data.needsApproval, href: '/?section=Schedule' },
-    { label: 'Paused conversations', value: data.paused, href: '/?section=Inbox' },
-    { label: 'Approved and waiting', value: data.upcoming, href: '/?section=Schedule' },
+    { label: 'Sending in next 7 days', value: data.nextWeek, href: '/?section=Schedule' },
+    { label: 'Paused families', value: data.paused, href: '/?section=Families' },
+    { label: 'Failed messages', value: data.failed, href: '/?section=Schedule' },
     { label: 'Active families', value: data.active, href: '/?section=Families' },
     { label: 'Opted out', value: data.optedOut, href: '/?section=Families' },
   ]
 
   return (
     <div className="flex flex-col gap-5">
+      {ctx.home.messaging_paused && (
+        <Link
+          href="/?section=Settings"
+          className="rounded-lg bg-notice p-4 text-sm font-medium leading-relaxed text-notice-foreground"
+        >
+          All automated messages are paused for {ctx.home.name}. Open Settings to resume.
+        </Link>
+      )}
+
+      {data.alerts.length > 0 && (
+        <section aria-labelledby="alerts" className="rounded-xl bg-card">
+          <h2 id="alerts" className="px-5 py-4 font-semibold">
+            Needs attention
+          </h2>
+          <ul>
+            {data.alerts.map((alert) => (
+              <li key={alert.id} className="border-t px-5 py-4 text-sm leading-relaxed">
+                <p>{alert.message}</p>
+                <p className="text-xs text-muted-foreground">{formatDateTime(alert.created_at, ctx.home.timezone)}</p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <ul className="grid grid-cols-2 gap-3 md:grid-cols-5">
         {tiles.map((tile) => (
           <li key={tile.label}>

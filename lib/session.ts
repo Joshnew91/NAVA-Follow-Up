@@ -27,7 +27,7 @@ export const getMemberships = cache(async () => {
   const supabase = await createClient()
   const { data } = await supabase
     .from('memberships')
-    .select('role, funeral_home_id, funeral_homes(id, name, notification_email, timezone, require_approval, texting_enabled)')
+    .select('role, funeral_home_id, funeral_homes(id, name, notification_email, timezone, texting_enabled, messaging_paused, messaging_paused_at, pause_on_reply, skip_holidays)')
     .eq('user_id', user.id)
     .order('created_at')
   return ((data ?? []) as unknown as MembershipRow[]).filter((m) => m.funeral_homes)

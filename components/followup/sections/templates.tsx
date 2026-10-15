@@ -11,8 +11,8 @@ export async function TemplatesSection({ ctx }: { ctx: HomeContext }) {
   return (
     <div className="flex flex-col gap-5">
       <p className="rounded-lg bg-notice p-4 text-sm leading-relaxed text-notice-foreground">
-        Placeholders: {'{first_name}'}, {'{deceased_name}'}, {'{funeral_home}'}.{' '}
-        {isAdmin ? 'Changes apply to newly scheduled messages.' : 'Only administrators can edit templates.'}
+        Personalize with {'{contact_name}'}, {'{first_name}'}, {'{deceased_name}'} and {'{funeral_home}'}.{' '}
+        {isAdmin ? 'Changes apply to families added after you save.' : 'Only administrators can edit templates.'}
       </p>
       <ol className="flex flex-col gap-3">
         {templates.map((template) => (

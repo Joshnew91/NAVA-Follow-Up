@@ -65,10 +65,37 @@ export function familyStatusLabel(status: FamilyStatus, pausedReason: string | n
 }
 
 export const SCHEDULED_STATUS_LABELS: Record<ScheduledStatus, string> = {
+  scheduled: 'Scheduled',
+  sent: 'Sent',
+  skipped: 'Skipped',
+  failed: 'Failed',
+  cancelled: 'Canceled',
+  opted_out: 'Opted out',
   draft: 'Draft',
-  pending_approval: 'Needs approval',
-  approved: 'Approved',
-  sent: 'Sent (simulated)',
-  cancelled: 'Cancelled',
-  blocked: 'On hold',
+  pending_approval: 'Scheduled',
+  approved: 'Scheduled',
+  blocked: 'Paused',
+}
+
+export type DisplayStatus = 'Scheduled' | 'Sent' | 'Delivered' | 'Failed' | 'Paused' | 'Canceled' | 'Opted out' | 'Skipped'
+
+export function displayStatus(
+  status: ScheduledStatus,
+  opts: { familyStatus?: FamilyStatus | null; homePaused?: boolean; deliveryStatus?: string | null },
+): DisplayStatus {
+  if (status === 'sent') return opts.deliveryStatus === 'delivered' ? 'Delivered' : 'Sent'
+  if (status === 'scheduled') {
+    if (opts.familyStatus === 'opted_out') return 'Opted out'
+    if (opts.homePaused || opts.familyStatus === 'paused' || opts.familyStatus === 'completed') return 'Paused'
+    return 'Scheduled'
+  }
+  return SCHEDULED_STATUS_LABELS[status] as DisplayStatus
+}
+
+export function renderPreview(body: string, values: { contact: string; deceased: string; home: string }) {
+  return body
+    .replaceAll('{contact_name}', values.contact)
+    .replaceAll('{first_name}', values.contact.split(' ')[0] ?? '')
+    .replaceAll('{funeral_home}', values.home)
+    .replaceAll('{deceased_name}', values.deceased || 'your loved one')
 }

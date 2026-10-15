@@ -1,40 +1,12 @@
-import { addFamily, recordConsent, scheduleFollowups } from '@/app/actions'
+import { addFamily, setFamilyPaused, stopFamily, withdrawAuthorization } from '@/app/actions'
 import { getFamilies } from '@/lib/data'
-import { familyStatusLabel, formatDate, formatDateTime, formatPhone } from '@/lib/format'
-import { CONSENT_METHOD_LABELS, STAFF_CONSENT_METHODS, type HomeContext } from '@/lib/types'
+import { familyStatusLabel, formatDate, formatPhone } from '@/lib/format'
+import type { HomeContext } from '@/lib/types'
 import { ActionForm } from '../action-form'
 import { Field, inputClass } from '../field'
 
-const DEFAULT_CONSENT_LANGUAGE =
-  'I agree to receive occasional follow-up text messages from this funeral home. Message frequency varies. Reply STOP to opt out at any time.'
-
-function ConsentFields({ prefix }: { prefix: string }) {
-  return (
-    <>
-      <Field label="How consent was collected" htmlFor={`${prefix}-method`}>
-        <select id={`${prefix}-method`} name="consentMethod" defaultValue="written_form" className={inputClass}>
-          {STAFF_CONSENT_METHODS.map((method) => (
-            <option key={method} value={method}>
-              {CONSENT_METHOD_LABELS[method]}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <Field label="Consent wording the family agreed to" htmlFor={`${prefix}-language`}>
-        <textarea
-          id={`${prefix}-language`}
-          name="consentLanguage"
-          rows={3}
-          maxLength={1000}
-          defaultValue={DEFAULT_CONSENT_LANGUAGE}
-          className={inputClass}
-        />
-      </Field>
-      <Field label="Evidence note (optional)" htmlFor={`${prefix}-evidence`} hint="For example: signed form filed with arrangement paperwork.">
-        <input id={`${prefix}-evidence`} name="evidenceNote" maxLength={1000} className={inputClass} />
-      </Field>
-    </>
-  )
+function dateOnly(value: string) {
+  return formatDate(`${value}T12:00:00Z`, 'UTC')
 }
 
 export async function FamiliesSection({ ctx }: { ctx: HomeContext }) {
@@ -43,34 +15,48 @@ export async function FamiliesSection({ ctx }: { ctx: HomeContext }) {
 
   return (
     <div className="flex flex-col gap-5">
-      <details className="rounded-xl bg-card p-5">
+      <details className="rounded-xl bg-card p-5" open={families.length === 0}>
         <summary className="min-h-11 cursor-pointer content-center font-semibold">Add a family</summary>
-        <ActionForm action={addFamily} submitLabel="Add family" resetOnSuccess className="mt-4">
+        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+          All five follow-ups are scheduled automatically and sent on their dates.
+        </p>
+        <ActionForm action={addFamily} submitLabel="Add family" pendingLabel="Adding..." resetOnSuccess className="mt-4">
           <div className="grid gap-4 md:grid-cols-2">
-            <Field label="Contact name" htmlFor="contactName">
-              <input id="contactName" name="contactName" required maxLength={120} className={inputClass} />
+            <Field label="Name of the deceased" htmlFor="deceasedName">
+              <input id="deceasedName" name="deceasedName" required maxLength={120} autoComplete="off" className={inputClass} />
             </Field>
-            <Field label="Relationship" htmlFor="relationship">
-              <input id="relationship" name="relationship" maxLength={60} placeholder="Daughter" className={inputClass} />
+            <Field label="Family contact" htmlFor="contactName">
+              <input id="contactName" name="contactName" required maxLength={120} autoComplete="off" className={inputClass} />
             </Field>
             <Field label="Mobile number" htmlFor="phone">
-              <input id="phone" name="phone" type="tel" required autoComplete="off" placeholder="(512) 555-0123" className={inputClass} />
+              <input
+                id="phone"
+                name="phone"
+                type="tel"
+                inputMode="tel"
+                required
+                autoComplete="off"
+                placeholder="(512) 555-0123"
+                className={inputClass}
+              />
             </Field>
-            <Field label="Name of the deceased" htmlFor="deceasedName">
-              <input id="deceasedName" name="deceasedName" maxLength={120} className={inputClass} />
+            <Field label="Service date" htmlFor="serviceDate">
+              <input id="serviceDate" name="serviceDate" type="date" required className={inputClass} />
             </Field>
-            <Field label="Service date" htmlFor="serviceDate" hint="Follow-ups are scheduled from this date.">
-              <input id="serviceDate" name="serviceDate" type="date" className={inputClass} />
+            <Field label="Relationship (optional)" htmlFor="relationship">
+              <input id="relationship" name="relationship" maxLength={60} placeholder="Daughter" className={inputClass} />
+            </Field>
+            <Field label="Authorization signed (optional)" htmlFor="authorizationSignedOn">
+              <input id="authorizationSignedOn" name="authorizationSignedOn" type="date" className={inputClass} />
             </Field>
           </div>
-          <fieldset className="flex flex-col gap-4 rounded-lg bg-secondary p-4">
-            <legend className="sr-only">SMS consent</legend>
-            <label className="flex min-h-11 items-center gap-3 text-sm font-medium">
-              <input type="checkbox" name="consentGiven" className="size-5 accent-brand" />
-              The family gave SMS consent
-            </label>
-            <ConsentFields prefix="new" />
-          </fieldset>
+  <p className="rounded-lg bg-secondary p-3 text-sm leading-relaxed text-muted-foreground">
+  Only add families who have signed your written SMS authorization form. Your name and today&apos;s date are recorded automatically.
+  </p>
+          <label className="flex min-h-11 items-center gap-3 text-sm text-muted-foreground">
+            <input type="checkbox" name="allowDuplicate" className="size-5 shrink-0 accent-brand" />
+            This is a different family with similar names
+          </label>
         </ActionForm>
       </details>
 
@@ -79,8 +65,9 @@ export async function FamiliesSection({ ctx }: { ctx: HomeContext }) {
       ) : (
         <ul className="flex flex-col gap-3">
           {families.map((family) => {
-            const consented = family.consent?.consent_given === true
-            const canSchedule = consented && family.status === 'active' && Boolean(family.service_date)
+            const authorized = family.consent?.consent_given === true
+            const canPause = family.status === 'active'
+            const canResume = family.status === 'paused' || family.status === 'completed'
             return (
               <li key={family.id} className="rounded-xl bg-card p-5">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -96,57 +83,85 @@ export async function FamiliesSection({ ctx }: { ctx: HomeContext }) {
                 <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
                   {formatPhone(family.phone_e164)}
                   {family.deceased_name ? ` · In memory of ${family.deceased_name}` : ''}
-                  {family.service_date ? ` · Service ${formatDate(`${family.service_date}T12:00:00Z`, 'UTC')}` : ''}
+                  {family.service_date ? ` · Service ${dateOnly(family.service_date)}` : ''}
                 </p>
 
-                <div className="mt-3 rounded-lg bg-secondary p-3 text-sm leading-relaxed">
-                  {family.consent ? (
-                    <>
-                      <p className="font-medium">
-                        {consented ? 'Consent on file' : 'No consent'} · {CONSENT_METHOD_LABELS[family.consent.method]}
-                      </p>
-                      <p className="text-muted-foreground">
-                        Recorded {formatDateTime(family.consent.recorded_at, tz)}
-                        {family.consent.evidence_note ? ` · ${family.consent.evidence_note}` : ''}
-                      </p>
-                    </>
-                  ) : (
-                    <p className="font-medium">No consent documented</p>
-                  )}
-                </div>
+                <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 rounded-lg bg-secondary p-3 text-sm">
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Enrolled</dt>
+                    <dd>
+                      {formatDate(family.created_at, tz)}
+                      {family.enrolledBy ? ` by ${family.enrolledBy}` : ''}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Authorization</dt>
+                    <dd>
+                      {family.status === 'opted_out'
+                        ? 'Opted out'
+                        : authorized
+                          ? family.authorization_signed_on
+                            ? `Signed ${dateOnly(family.authorization_signed_on)}`
+                            : 'On file'
+                          : 'Not on file'}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Upcoming messages</dt>
+                    <dd>{family.openScheduled}</dd>
+                  </div>
+                </dl>
 
-                <div className="mt-3 flex flex-wrap gap-3">
-                  {canSchedule && (
-                    <ActionForm action={scheduleFollowups} submitLabel="Schedule follow-ups" pendingLabel="Scheduling...">
-                      <input type="hidden" name="familyId" value={family.id} />
-                    </ActionForm>
-                  )}
-                  {consented && !family.service_date && (
-                    <p className="text-sm text-muted-foreground">Add a service date to schedule follow-ups.</p>
-                  )}
-                  {family.status !== 'opted_out' && (
-                    <details className="w-full">
-                      <summary className="min-h-11 cursor-pointer content-center text-sm font-medium">
-                        {consented ? 'Withdraw consent' : 'Record consent'}
-                      </summary>
+                {family.status === 'opted_out' ? (
+                  <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+                    This number replied STOP and will not receive messages. Only the family can opt back in by texting START.
+                  </p>
+                ) : (
+                  <div className="mt-3 flex flex-wrap gap-3">
+                    {canPause && (
+                      <ActionForm action={setFamilyPaused} submitLabel="Pause" pendingLabel="Pausing..." variant="outline">
+                        <input type="hidden" name="familyId" value={family.id} />
+                        <input type="hidden" name="pause" value="true" />
+                      </ActionForm>
+                    )}
+                    {canResume && (
+                      <ActionForm action={setFamilyPaused} submitLabel="Resume" pendingLabel="Resuming...">
+                        <input type="hidden" name="familyId" value={family.id} />
+                        <input type="hidden" name="pause" value="false" />
+                      </ActionForm>
+                    )}
+                    {family.status !== 'completed' && family.openScheduled > 0 && (
                       <ActionForm
-                        action={recordConsent}
-                        submitLabel={consented ? 'Withdraw consent' : 'Save consent'}
-                        variant={consented ? 'destructive' : 'default'}
-                        className="mt-3"
+                        action={stopFamily}
+                        submitLabel="Stop follow-ups"
+                        pendingLabel="Stopping..."
+                        variant="ghost"
+                        confirmMessage="Stop all remaining follow-ups for this family? You can resume later."
                       >
                         <input type="hidden" name="familyId" value={family.id} />
-                        <input type="hidden" name="consentGiven" value={consented ? 'false' : 'true'} />
-                        <ConsentFields prefix={family.id} />
                       </ActionForm>
-                    </details>
-                  )}
-                  {family.status === 'opted_out' && (
-                    <p className="text-sm leading-relaxed text-muted-foreground">
-                      This family texted STOP. Only the family can opt back in by texting START.
-                    </p>
-                  )}
-                </div>
+                    )}
+                    {authorized && (
+                      <details className="w-full">
+                        <summary className="min-h-11 cursor-pointer content-center text-sm text-muted-foreground">
+                          Family withdrew authorization
+                        </summary>
+                        <ActionForm
+                          action={withdrawAuthorization}
+                          submitLabel="Record withdrawal"
+                          variant="destructive"
+                          confirmMessage="Mark this number as opted out and cancel every remaining message?"
+                          className="mt-3"
+                        >
+                          <input type="hidden" name="familyId" value={family.id} />
+                          <Field label="Note (optional)" htmlFor={`note-${family.id}`}>
+                            <input id={`note-${family.id}`} name="note" maxLength={1000} className={inputClass} />
+                          </Field>
+                        </ActionForm>
+                      </details>
+                    )}
+                  </div>
+                )}
               </li>
             )
           })}
