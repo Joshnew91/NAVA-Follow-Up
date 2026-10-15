@@ -7,6 +7,7 @@ import {
   updateMemberRole,
   updateSettings,
 } from '@/app/actions'
+import Link from 'next/link'
 import { getSettings } from '@/lib/data'
 import { formatDateTime } from '@/lib/format'
 import type { HomeContext } from '@/lib/types'
@@ -19,6 +20,20 @@ export async function SettingsSection({ ctx }: { ctx: HomeContext }) {
 
   return (
     <div className="flex flex-col gap-5">
+      <Link
+        href="/?section=Billing"
+        className="flex min-h-11 items-center justify-between gap-3 rounded-xl bg-card p-5 transition-colors hover:bg-accent/60 focus-visible:outline-2 focus-visible:outline-ring"
+      >
+        <span>
+          <span className="block font-semibold">Billing &amp; Subscription</span>
+          <span className="mt-1 block text-sm leading-relaxed text-muted-foreground">
+            Plan, payment card, invoices, family usage and cancellation.
+          </span>
+        </span>
+        <span aria-hidden="true" className="text-brand">
+          {'›'}
+        </span>
+      </Link>
       <section aria-labelledby="home-settings" className="rounded-xl bg-card p-5">
         <h2 id="home-settings" className="font-semibold">
           Funeral home

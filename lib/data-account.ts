@@ -1,4 +1,5 @@
 import 'server-only'
+import { getStripe } from './stripe'
 import { createClient } from './supabase/server'
 
 export type Usage = {
@@ -18,6 +19,10 @@ export type SubscriptionRow = {
   stripe_customer_id: string | null
   stripe_subscription_id: string | null
   current_period_end: string | null
+  cancel_at_period_end: boolean
+  canceled_at: string | null
+  past_due_since: string | null
+  service_suspended_at: string | null
 }
 
 export type PlatformFlags = {
@@ -25,6 +30,7 @@ export type PlatformFlags = {
   billing_live_enabled: boolean
   number_purchase_enabled: boolean
   app_base_url: string | null
+  grace_period_days: number
 }
 
 export type MessagingProfile = {
@@ -68,6 +74,7 @@ const NO_FLAGS: PlatformFlags = {
   billing_live_enabled: false,
   number_purchase_enabled: false,
   app_base_url: null,
+  grace_period_days: 7,
 }
 
 export async function getPlatformFlags(): Promise<PlatformFlags> {
@@ -82,7 +89,9 @@ export async function getBilling(homeId: string) {
     supabase.rpc('nava_usage', { p_home: homeId }),
     supabase
       .from('subscriptions')
-      .select('status, stripe_customer_id, stripe_subscription_id, current_period_end')
+      .select(
+        'status, stripe_customer_id, stripe_subscription_id, current_period_end, cancel_at_period_end, canceled_at, past_due_since, service_suspended_at',
+      )
       .eq('funeral_home_id', homeId)
       .maybeSingle(),
     getPlatformFlags(),
@@ -91,6 +100,87 @@ export async function getBilling(homeId: string) {
     usage: ((usage.data as Usage[] | null)?.[0] ?? null) as Usage | null,
     subscription: (sub.data ?? null) as SubscriptionRow | null,
     flags,
+  }
+}
+
+export type InvoiceSummary = {
+  id: string
+  number: string | null
+  created: number
+  total: number
+  status: string | null
+  hostedUrl: string | null
+  pdfUrl: string | null
+}
+
+export type StripeDetails = {
+  nextAmountCents: number | null
+  nextDate: number | null
+  card: { brand: string; last4: string; expMonth: number; expYear: number } | null
+  billingName: string | null
+  billingEmail: string | null
+  invoices: InvoiceSummary[]
+  error: boolean
+}
+
+// The customer/subscription IDs come from a row the caller already read through RLS,
+// so one funeral home can never request another's Stripe data.
+export async function getStripeDetails(sub: SubscriptionRow | null): Promise<StripeDetails | null> {
+  if (!sub?.stripe_customer_id || !process.env.STRIPE_SECRET_KEY) return null
+  const stripe = getStripe()
+  const empty: StripeDetails = {
+    nextAmountCents: null,
+    nextDate: null,
+    card: null,
+    billingName: null,
+    billingEmail: null,
+    invoices: [],
+    error: false,
+  }
+  try {
+    const live = sub.stripe_subscription_id && ['active', 'trialing', 'past_due', 'unpaid'].includes(sub.status)
+    const [customer, invoices, preview] = await Promise.all([
+      stripe.customers.retrieve(sub.stripe_customer_id, { expand: ['invoice_settings.default_payment_method'] }),
+      stripe.invoices.list({ customer: sub.stripe_customer_id, limit: 12 }),
+      live && !sub.cancel_at_period_end
+        ? stripe.invoices
+            .createPreview({ customer: sub.stripe_customer_id, subscription: sub.stripe_subscription_id! })
+            .catch(() => null)
+        : Promise.resolve(null),
+    ])
+    if (customer.deleted) return empty
+
+    let pm = customer.invoice_settings?.default_payment_method
+    if (!pm || typeof pm === 'string') {
+      if (live) {
+        const s = await stripe.subscriptions.retrieve(sub.stripe_subscription_id!, { expand: ['default_payment_method'] })
+        pm = s.default_payment_method
+      }
+    }
+    const card = pm && typeof pm !== 'string' && pm.card ? pm.card : null
+
+    return {
+      nextAmountCents: preview?.amount_due ?? null,
+      nextDate: preview?.next_payment_attempt ?? preview?.period_end ?? null,
+      card: card ? { brand: card.brand, last4: card.last4, expMonth: card.exp_month, expYear: card.exp_year } : null,
+      billingName: customer.name ?? null,
+      billingEmail: customer.email ?? null,
+      invoices: invoices.data
+        .filter((i) => i.status !== 'draft')
+        .map((i) => ({
+          id: i.id!,
+          number: i.number,
+          created: i.created,
+          total: i.total,
+          status: i.status,
+          hostedUrl: i.hosted_invoice_url ?? null,
+          pdfUrl: i.invoice_pdf ?? null,
+        })),
+      error: false,
+    }
+  } catch (error) {
+    console.error('[nava] stripe details failed', error)
+    return { ...empty, error: true }
   }
 }
 

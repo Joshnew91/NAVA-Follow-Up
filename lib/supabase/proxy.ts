@@ -1,7 +1,8 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-const PUBLIC_PREFIXES = ['/auth']
+// Webhook and job routes have no user session; each verifies its own signature or secret.
+const PUBLIC_PREFIXES = ['/auth', '/api/stripe/webhook', '/api/twilio/', '/api/jobs/']
 
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request })

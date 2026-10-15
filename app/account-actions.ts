@@ -5,7 +5,8 @@ import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { getPlatformFlags } from '@/lib/data-account'
 import { getHomeContext } from '@/lib/session'
-import { getPlanPriceId, getStripe, PLAN, stripeIsLiveKey } from '@/lib/stripe'
+import { syncSubscription } from '@/lib/jobs'
+import { getPlanPriceId, getPortalConfigId, getStripe, PLAN, stripeIsLiveKey } from '@/lib/stripe'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import type { ActionResult } from '@/lib/types'
@@ -91,18 +92,121 @@ export async function startSubscription(): Promise<ActionResult> {
   redirect(session.url)
 }
 
-export async function openBillingPortal(): Promise<ActionResult> {
+const PORTAL_FLOWS = ['overview', 'payment_method_update'] as const
+
+async function audit(homeId: string, actorEmail: string, action: string, summary: string, details: Record<string, unknown> = {}) {
+  const { error } = await createAdminClient().rpc('nava_audit_write', {
+    p_home: homeId,
+    p_action: action,
+    p_entity: 'subscription',
+    p_entity_id: homeId,
+    p_summary: summary,
+    p_details: { actor_email: actorEmail, ...details },
+  })
+  if (error) console.error('[nava] billing audit failed', error)
+}
+
+async function homeSubscription(homeId: string) {
+  const { data } = await createAdminClient()
+    .from('subscriptions')
+    .select('stripe_customer_id, stripe_subscription_id, status, cancel_at_period_end')
+    .eq('funeral_home_id', homeId)
+    .maybeSingle()
+  return data as {
+    stripe_customer_id: string | null
+    stripe_subscription_id: string | null
+    status: string
+    cancel_at_period_end: boolean
+  } | null
+}
+
+export async function openBillingPortal(formData?: FormData): Promise<ActionResult> {
   const ctx = await requireAdmin()
   if (!ctx) return { ok: false, message: 'Only administrators can manage billing.' }
   if (!process.env.STRIPE_SECRET_KEY) return { ok: false, message: 'Billing is not connected yet.' }
-  const admin = createAdminClient()
-  const { data } = await admin.from('subscriptions').select('stripe_customer_id').eq('funeral_home_id', ctx.home.id).maybeSingle()
-  if (!data?.stripe_customer_id) return { ok: false, message: 'Start a subscription first.' }
-  const portal = await getStripe().billingPortal.sessions.create({
-    customer: data.stripe_customer_id,
-    return_url: `${await origin()}/?section=Billing`,
+  const requested = String(formData?.get('flow') ?? 'overview')
+  const flow = (PORTAL_FLOWS as readonly string[]).includes(requested) ? requested : 'overview'
+  const sub = await homeSubscription(ctx.home.id)
+  if (!sub?.stripe_customer_id) return { ok: false, message: 'Start a subscription first.' }
+
+  const stripe = getStripe()
+  const returnUrl = `${await origin()}/?section=Billing`
+  let url: string
+  try {
+    const portal = await stripe.billingPortal.sessions.create({
+      customer: sub.stripe_customer_id,
+      configuration: await getPortalConfigId(stripe, createAdminClient()),
+      return_url: returnUrl,
+      ...(flow === 'payment_method_update'
+        ? { flow_data: { type: 'payment_method_update', after_completion: { type: 'redirect', redirect: { return_url: returnUrl } } } }
+        : {}),
+    })
+    url = portal.url
+  } catch (error) {
+    console.error('[nava] portal session failed', error)
+    return { ok: false, message: 'Could not open the billing portal. Please try again.' }
+  }
+  await audit(ctx.home.id, ctx.userEmail, 'billing_portal_opened', `Opened Stripe billing portal (${flow.replace(/_/g, ' ')}).`)
+  redirect(url)
+}
+
+export async function cancelSubscription(formData: FormData): Promise<ActionResult> {
+  const ctx = await requireAdmin()
+  if (!ctx) return { ok: false, message: 'Only administrators can cancel the subscription.' }
+  if (str(formData, 'confirm', 20).toUpperCase() !== 'CANCEL') {
+    return { ok: false, message: 'Type CANCEL to confirm.' }
+  }
+  if (!process.env.STRIPE_SECRET_KEY) return { ok: false, message: 'Billing is not connected yet.' }
+  const sub = await homeSubscription(ctx.home.id)
+  if (!sub?.stripe_subscription_id || !['active', 'trialing', 'past_due', 'unpaid'].includes(sub.status)) {
+    return { ok: false, message: 'There is no active subscription to cancel.' }
+  }
+  if (sub.cancel_at_period_end) return { ok: true, message: 'Cancellation is already scheduled.' }
+
+  const stripe = getStripe()
+  const reason = str(formData, 'reason', 500)
+  const updated = await stripe.subscriptions.update(
+    sub.stripe_subscription_id,
+    {
+      cancel_at_period_end: true,
+      ...(reason ? { cancellation_details: { comment: reason } } : {}),
+    },
+    { idempotencyKey: `cancel:${sub.stripe_subscription_id}:${new Date().toISOString().slice(0, 13)}` },
+  )
+  await syncSubscription(createAdminClient(), updated)
+  const endsOn = updated.items.data[0]?.current_period_end
+  await audit(ctx.home.id, ctx.userEmail, 'subscription_cancel_scheduled', 'Scheduled cancellation at the end of the billing period.', {
+    ends_at: endsOn ? new Date(endsOn * 1000).toISOString() : null,
+    reason: reason || null,
   })
-  redirect(portal.url)
+  revalidatePath('/')
+  return { ok: true, message: 'Cancellation scheduled. Service stays active until the end of the paid period.' }
+}
+
+export async function reactivateSubscription(): Promise<ActionResult> {
+  const ctx = await requireAdmin()
+  if (!ctx) return { ok: false, message: 'Only administrators can reactivate the subscription.' }
+  if (!process.env.STRIPE_SECRET_KEY) return { ok: false, message: 'Billing is not connected yet.' }
+  const sub = await homeSubscription(ctx.home.id)
+
+  if (sub?.stripe_subscription_id && sub.cancel_at_period_end && ['active', 'trialing', 'past_due', 'unpaid'].includes(sub.status)) {
+    const updated = await getStripe().subscriptions.update(
+      sub.stripe_subscription_id,
+      { cancel_at_period_end: false },
+      { idempotencyKey: `reactivate:${sub.stripe_subscription_id}:${new Date().toISOString().slice(0, 13)}` },
+    )
+    await syncSubscription(createAdminClient(), updated)
+    await audit(ctx.home.id, ctx.userEmail, 'subscription_reactivated', 'Removed the scheduled cancellation.')
+    revalidatePath('/')
+    return { ok: true, message: 'Your subscription will continue. No new charge was made today.' }
+  }
+
+  if (!sub?.stripe_subscription_id || ['canceled', 'incomplete_expired'].includes(sub.status)) {
+    await audit(ctx.home.id, ctx.userEmail, 'subscription_restart_started', 'Started checkout to restart the subscription.')
+    return startSubscription()
+  }
+
+  return { ok: false, message: 'This subscription is already active.' }
 }
 
 export async function updateSpendingLimit(formData: FormData): Promise<ActionResult> {

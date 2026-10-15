@@ -135,10 +135,87 @@ export function renderEmail(kind: string, p: Payload): RenderedEmail {
         subject: 'Your NAVA Memorial payment did not go through',
         heading: 'Payment problem',
         paragraphs: [
-          'We could not collect your latest subscription payment. Please update your card under Billing.',
-          'Scheduled messages to families continue while this is resolved.',
+          `We could not collect your subscription payment${p.amount_cents ? ` of ${dollars(p.amount_cents)}` : ''}. Please update your card under Billing.`,
+          p.next_attempt ? `Stripe will automatically try again on ${s(p.next_attempt)}.` : 'Stripe will automatically retry the payment.',
+          `Scheduled messages to families keep sending for ${n(p.grace_days) || 7} days while this is resolved. After that, automated texting pauses until payment succeeds.`,
         ],
         cta: { label: 'Update payment method', path: '/?section=Billing' },
+      }
+    case 'payment_action_required':
+      return {
+        subject: 'Your bank needs you to confirm a NAVA Memorial payment',
+        heading: 'Confirm your payment',
+        paragraphs: [
+          `Your bank asked for extra verification on a ${dollars(p.amount_cents)} payment. Open the invoice to confirm it.`,
+        ],
+        cta: { label: 'Open Billing', path: '/?section=Billing' },
+      }
+    case 'payment_receipt':
+      return {
+        subject: `Receipt: ${dollars(p.amount_cents)} paid to NAVA Memorial`,
+        heading: 'Payment received',
+        paragraphs: [
+          `We received ${dollars(p.amount_cents)}${p.paid_on ? ` on ${s(p.paid_on)}` : ''}${p.invoice_number ? ` for invoice ${s(p.invoice_number)}` : ''}. Thank you.`,
+          'You can download every invoice and receipt from the Billing page.',
+        ],
+        cta: { label: 'View invoices', path: '/?section=Billing' },
+      }
+    case 'payment_reminder':
+      return {
+        subject: 'Upcoming NAVA Memorial payment',
+        heading: 'Payment reminder',
+        paragraphs: [
+          `Your next payment of about ${dollars(p.amount_cents)} will be collected${p.due_on ? ` on ${s(p.due_on)}` : ' soon'}.`,
+          'No action is needed if your card on file is current.',
+        ],
+        cta: { label: 'Review billing', path: '/?section=Billing' },
+      }
+    case 'subscription_canceling':
+      return {
+        subject: 'Your NAVA Memorial subscription is set to end',
+        heading: 'Cancellation scheduled',
+        paragraphs: [
+          `Your service stays fully active until ${s(p.ends_on) || 'the end of your paid period'}. You will not be charged again.`,
+          'After that date, scheduled texts will not send. Your families, message history and settings are kept, and you can reactivate any time from Billing.',
+        ],
+        cta: { label: 'Open Billing', path: '/?section=Billing' },
+      }
+    case 'subscription_reactivated':
+      return {
+        subject: 'Your NAVA Memorial subscription will continue',
+        heading: 'Subscription reactivated',
+        paragraphs: ['Your cancellation was removed. Billing and automated follow-ups continue as normal.'],
+        cta: { label: 'Open Billing', path: '/?section=Billing' },
+      }
+    case 'subscription_ended':
+      return {
+        subject: 'Your NAVA Memorial subscription has ended',
+        heading: 'Subscription ended',
+        paragraphs: [
+          'Automated texting has stopped. Scheduled messages will not send.',
+          'Your records are kept. If you subscribe again, messages that came due while service was off will not be sent automatically; you can reschedule any that are still appropriate.',
+        ],
+        cta: { label: 'Reactivate', path: '/?section=Billing' },
+      }
+    case 'service_suspended':
+      return {
+        subject: `Automated texting is paused for ${s(p.home_name)}`,
+        heading: 'Texting paused',
+        paragraphs: [
+          'Your subscription is not active, so scheduled follow-ups are not sending.',
+          'Update your payment method or reactivate under Billing to restore service. Messages that come due while paused will not be sent late automatically.',
+        ],
+        cta: { label: 'Restore service', path: '/?section=Billing' },
+      }
+    case 'service_restored':
+      return {
+        subject: `Automated texting restored for ${s(p.home_name)}`,
+        heading: 'Service restored',
+        paragraphs: [
+          'Payment succeeded and automated follow-ups are running again.',
+          'Messages that came due while service was paused were held and not sent. Review them under Schedule and reschedule any that are still appropriate.',
+        ],
+        cta: { label: 'Review schedule', path: '/?section=Schedule' },
       }
     case 'alert':
       return {

@@ -1,7 +1,7 @@
 import 'server-only'
 import type Stripe from 'stripe'
 import { renderEmail, sendEmail } from './email'
-import { getStripe, stripeIsLiveKey } from './stripe'
+import { ensureWebhookEndpoint, getStripe, stripeIsLiveKey } from './stripe'
 import { createAdminClient } from './supabase/admin'
 import { sendSms, twilioConfigured } from './twilio'
 
@@ -183,27 +183,45 @@ async function pushOverageCharges(admin: Admin, s: PlatformSettings) {
   return count
 }
 
-export async function syncSubscription(admin: Admin, sub: Stripe.Subscription) {
-  const homeId = sub.metadata?.funeral_home_id
-  if (!homeId) return
-  const periodEnd = sub.items.data[0]?.current_period_end
+export async function syncSubscription(admin: Admin, sub: Stripe.Subscription): Promise<string | null> {
+  const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id
+  let homeId: string | null = sub.metadata?.funeral_home_id ?? null
+  if (!homeId) {
+    const { data } = await admin.from('subscriptions').select('funeral_home_id').eq('stripe_customer_id', customerId).maybeSingle()
+    homeId = (data?.funeral_home_id as string | undefined) ?? null
+  }
+  if (!homeId) return null
+
   const { data: existing } = await admin
     .from('subscriptions')
-    .select('stripe_subscription_id')
+    .select('stripe_subscription_id, status')
     .eq('funeral_home_id', homeId)
     .single()
+  const isCurrentlyActive = existing && ['active', 'trialing', 'past_due', 'unpaid'].includes(existing.status as string)
+  // A stale event for an older subscription must not overwrite the current one.
+  if (existing?.stripe_subscription_id && existing.stripe_subscription_id !== sub.id && isCurrentlyActive && sub.status === 'canceled') {
+    return homeId
+  }
+
   const isNew = existing?.stripe_subscription_id !== sub.id
+  const periodEnd = sub.items.data[0]?.current_period_end
   await admin
     .from('subscriptions')
     .update({
-      stripe_customer_id: typeof sub.customer === 'string' ? sub.customer : sub.customer.id,
+      stripe_customer_id: customerId,
       stripe_subscription_id: sub.id,
       status: sub.status,
       current_period_end: periodEnd ? new Date(periodEnd * 1000).toISOString() : null,
+      cancel_at_period_end: Boolean(sub.cancel_at_period_end || (sub.cancel_at && sub.status !== 'canceled')),
+      canceled_at: sub.ended_at ? new Date(sub.ended_at * 1000).toISOString() : null,
       ...(isNew ? { allowance_year_start: new Date(sub.start_date * 1000).toISOString().slice(0, 10) } : {}),
       updated_at: new Date().toISOString(),
     })
     .eq('funeral_home_id', homeId)
+
+  const { error } = await admin.rpc('nava_refresh_service_state', { p_home: homeId })
+  if (error) console.error('[nava] service state refresh failed', error)
+  return homeId
 }
 
 async function refreshSubscriptions(admin: Admin) {
@@ -236,6 +254,17 @@ export async function runDispatch() {
 
 export async function runDaily() {
   const admin = createAdminClient()
+  let webhook = 'not_configured'
+  if (process.env.STRIPE_SECRET_KEY) {
+    try {
+      const s = await settings(admin)
+      webhook = await ensureWebhookEndpoint(getStripe(), admin, s.app_base_url)
+    } catch (error) {
+      console.error('[nava] webhook setup failed', error)
+      webhook = 'error'
+    }
+  }
   const subscriptions = await refreshSubscriptions(admin)
-  return { subscriptions, ...(await runDispatch()) }
+  const { data: serviceChanges } = await admin.rpc('nava_refresh_all_service_states')
+  return { webhook, subscriptions, serviceChanges, ...(await runDispatch()) }
 }

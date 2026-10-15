@@ -19,7 +19,7 @@ const TITLES: Record<Section, string> = {
   Schedule: 'Scheduled Messages',
   Templates: 'Follow-Up Templates',
   Reports: 'Reports',
-  Billing: 'Billing',
+  Billing: 'Billing & Subscription',
   Texting: 'Texting Setup',
   Activity: 'Activity & Monthly Reports',
   Settings: 'Settings',
