@@ -56,7 +56,7 @@ export async function SettingsSection({ ctx }: { ctx: HomeContext }) {
           </p>
         )}
         <p className="mt-4 rounded-lg bg-notice p-3 text-sm leading-relaxed text-notice-foreground">
-          Texting is not connected yet. Messages run on schedule but each send is simulated and no real texts go out.
+          Real texting turns on after your registration is approved under Texting Setup and NAVA activates it. Until then, sends are simulated.
         </p>
       </section>
 

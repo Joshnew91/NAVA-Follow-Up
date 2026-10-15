@@ -1,6 +1,9 @@
 import type { HomeContext, Section } from '@/lib/types'
 import { AppHeader } from './app-header'
 import { SectionNav } from './section-nav'
+import { ActivitySection } from './sections/activity'
+import { BillingSection } from './sections/billing'
+import { TextingSection } from './sections/texting'
 import { FamiliesSection } from './sections/families'
 import { InboxSection } from './sections/inbox'
 import { OverviewSection } from './sections/overview'
@@ -16,6 +19,9 @@ const TITLES: Record<Section, string> = {
   Schedule: 'Scheduled Messages',
   Templates: 'Follow-Up Templates',
   Reports: 'Reports',
+  Billing: 'Billing',
+  Texting: 'Texting Setup',
+  Activity: 'Activity & Monthly Reports',
   Settings: 'Settings',
 }
 
@@ -45,12 +51,11 @@ export function Dashboard({ ctx, section, familyId }: DashboardProps) {
             {section === 'Schedule' && <ScheduleSection ctx={ctx} />}
             {section === 'Templates' && <TemplatesSection ctx={ctx} />}
             {section === 'Reports' && <ReportsSection ctx={ctx} />}
+            {section === 'Billing' && <BillingSection ctx={ctx} />}
+            {section === 'Texting' && <TextingSection ctx={ctx} />}
+            {section === 'Activity' && <ActivitySection ctx={ctx} />}
             {section === 'Settings' && <SettingsSection ctx={ctx} />}
           </div>
-
-          <p className="mt-7 text-xs leading-relaxed text-muted-foreground">
-            TEXTING DISABLED · Outgoing messages are simulated and never leave this app.
-          </p>
         </main>
       </div>
     </>

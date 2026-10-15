@@ -1,4 +1,15 @@
-export const SECTIONS = ['Overview', 'Inbox', 'Families', 'Schedule', 'Templates', 'Reports', 'Settings'] as const
+export const SECTIONS = [
+  'Overview',
+  'Inbox',
+  'Families',
+  'Schedule',
+  'Templates',
+  'Reports',
+  'Billing',
+  'Texting',
+  'Activity',
+  'Settings',
+] as const
 export type Section = (typeof SECTIONS)[number]
 
 export function parseSection(value: string | string[] | undefined): Section {
