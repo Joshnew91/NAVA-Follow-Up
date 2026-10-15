@@ -43,6 +43,8 @@ export type ScheduledRow = {
   family_id: string
   body: string
   scheduled_for: string
+  original_scheduled_for: string | null
+  delivery_adjustment: string | null
   status: ScheduledStatus
   blocked_reason: string | null
   sent_at: string | null
@@ -195,7 +197,7 @@ export async function getInbox(homeId: string, selectedId?: string) {
 export async function getSchedule(homeId: string) {
   const supabase = await createClient()
   const columns =
-    'id, family_id, body, scheduled_for, status, blocked_reason, sent_at, attempts, last_error, edited_at, families(contact_name, status), message_templates(title, position)'
+    'id, family_id, body, scheduled_for, original_scheduled_for, delivery_adjustment, status, blocked_reason, sent_at, attempts, last_error, edited_at, families(contact_name, status), message_templates(title, position)'
   const [open, closed] = await Promise.all([
     supabase
       .from('scheduled_messages')

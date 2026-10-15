@@ -33,6 +33,14 @@ function ScheduledCard({ item, ctx }: { item: ScheduledRow; ctx: HomeContext }) 
           {status} · {formatDateTime(item.scheduled_for, tz)}
         </p>
       </div>
+      {item.status === 'scheduled' &&
+        item.original_scheduled_for &&
+        item.delivery_adjustment &&
+        formatDateTime(item.original_scheduled_for, tz) !== formatDateTime(item.scheduled_for, tz) && (
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            Originally {formatDateTime(item.original_scheduled_for, tz)}. {item.delivery_adjustment}
+          </p>
+        )}
       {reason && (
         <p className="mt-2 rounded-lg bg-notice p-3 text-sm leading-relaxed text-notice-foreground">{reason}</p>
       )}
@@ -92,7 +100,7 @@ export async function ScheduleSection({ ctx }: { ctx: HomeContext }) {
       <p className="rounded-lg bg-notice p-4 text-sm leading-relaxed text-notice-foreground">
         {ctx.home.messaging_paused
           ? 'All automated messages are paused. Nothing will send until an administrator resumes them in Settings.'
-          : 'Messages send automatically on their scheduled dates between 9am and 8pm, at most one per family per day.'}{' '}
+          : 'Automated messages send Monday to Saturday, 10am to 6pm Eastern, spread across the day, at most one per family per day. Anything due on a Sunday or federal holiday moves to the next sending day. Personal replies to families can be sent anytime.'}{' '}
         {ctx.home.texting_enabled ? '' : 'Texting is not connected yet, so sends are simulated.'}
       </p>
 

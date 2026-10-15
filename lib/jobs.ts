@@ -43,6 +43,10 @@ async function sendQueuedTexts(admin: Admin, s: PlatformSettings) {
       await admin.from('messages').update({ delivery_status: 'simulated' }).eq('id', row.id).eq('delivery_status', 'queued')
       continue
     }
+    if (row.scheduled_message_id) {
+      const { data: allowed, error: checkError } = await admin.rpc('nava_presend_check', { p_message: row.id })
+      if (checkError || !allowed) continue
+    }
     const { data: claimed } = await admin
       .from('messages')
       .update({ delivery_status: 'sent' })
